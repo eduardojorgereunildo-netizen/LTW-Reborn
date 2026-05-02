@@ -302,4 +302,5 @@ char* gl4es_inplace_replace_simple(char* pBuffer, int* size, const char* S, cons
     
     return pBuffer;
 }
-#pragma GCC visibility pop(hidden)
+// FIXED: Corrected pragma syntax
+#pragma GCC visibility pop
