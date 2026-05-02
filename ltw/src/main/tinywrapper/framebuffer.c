@@ -6,7 +6,6 @@
 
 #include "proc.h"
 #include "egl.h"
-#include "env.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -157,7 +156,7 @@ void glClearBufferfv( 	GLenum buffer,
 void glDrawBuffers(GLsizei n, const GLenum* buffers) {
     if(!current_context || !buffers) return;
     
-    // FIXED: Validate buffer count and use dynamic allocation
+    // FIXED: Validate buffer count
     if(n < 0 || n > MAX_DRAWBUFFERS) {
         printf("LTW FB ERROR: glDrawBuffers called with invalid count: %d\n", n);
         return;
@@ -179,13 +178,7 @@ void glDrawBuffers(GLsizei n, const GLenum* buffers) {
     framebuffer->nbuffers = n;
     memcpy(framebuffer->virt_drawbuffers, buffers, n * sizeof(GLenum));
     
-    // FIXED: Use malloc instead of VLA to prevent stack overflow
-    GLenum* phys_drawbuffers = (GLenum*)malloc(n * sizeof(GLenum));
-    if(!phys_drawbuffers) {
-        printf("LTW FB ERROR: Failed to allocate phys_drawbuffers\n");
-        return;
-    }
-    
+    GLenum phys_drawbuffers[n];
     for(GLsizei i = 0; i < n; i++) {
         GLenum buffer = buffers[i];
         rebind_framebuffer(GL_DRAW_FRAMEBUFFER, framebuffer, buffer);
@@ -193,7 +186,6 @@ void glDrawBuffers(GLsizei n, const GLenum* buffers) {
         else phys_drawbuffers[i] = GL_NONE;
     }
     es3_functions.glDrawBuffers(n, phys_drawbuffers);
-    free(phys_drawbuffers);
 }
 
 void glDrawBuffer(GLenum buffer) {
@@ -444,7 +436,11 @@ void glBindFramebuffer(GLenum target, GLuint framebuffer) {
 
 // FIXED: Initialize debug flag from environment
 __attribute__((constructor)) void init_framebuffer_debug() {
-    framebuffer_debug = env_istrue("LTW_DEBUG_FRAMEBUFFER");
+    const char *debug_env = getenv("LTW_DEBUG_FRAMEBUFFER");
+    framebuffer_debug = (debug_env != NULL && 
+                        (strcmp(debug_env, "1") == 0 || 
+                         strcmp(debug_env, "true") == 0 ||
+                         strcmp(debug_env, "yes") == 0));
     if(framebuffer_debug) {
         printf("LTW: Framebuffer debug logging enabled\n");
     }
