@@ -8,6 +8,7 @@
 #include "egl.h"
 #include <string.h>
 #include "libraryinternal.h"
+#include "env.h"
 //#include <GL/glext.h>
 
 #define GL_TEXTURE_SWIZZLE_RGBA 0x8E46
@@ -201,7 +202,7 @@ INTERNAL void swizzle_process_swizzle_param(GLenum target, GLenum swizzle_param,
 }
 
 // FIXED: Initialize debug flag from environment
-__attribute((constructor)) void init_swizzle_debug() {
+__attribute__((constructor)) void init_swizzle_debug() {
     swizzle_debug = env_istrue("LTW_DEBUG_SWIZZLE");
     if(swizzle_debug) {
         printf("LTW: Texture swizzle debug logging enabled\n");
