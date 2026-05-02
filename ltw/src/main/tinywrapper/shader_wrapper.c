@@ -9,9 +9,12 @@
 #include "glsl_optimizer/src/code/c_wrapper.h"
 #include <GLES3/gl3.h>
 #include <string.h>
+#include <stdio.h>
 #include "string_utils.h"
 #include "egl.h"
 #include "proc.h"
+
+#define MAX_SHADER_NAME_LEN 512
 
 typedef struct {
     GLenum shader_type;
@@ -83,12 +86,37 @@ void glGetShaderiv(GLuint shader, GLuint pname, GLint* params) {
     es3_functions.glGetShaderiv(shader, pname, params);
 }
 
+// FIXED: Increased buffer sizes and added validation
 static void insert_fragout_pos(char* source, int* size, const char* name, GLuint pos) {
-    char src_string[256] = { 0 };
-    char dst_string[256] = { 0 };
-    snprintf(src_string, sizeof(src_string), "/* LTW INSERT LOCATION %s LTW */", name);
-    snprintf(dst_string, sizeof(dst_string), "layout(location = %u) ", pos);
+    if(!source || !size || !name) {
+        printf("LTWShdrWp: Invalid parameters in insert_fragout_pos\n");
+        return;
+    }
+    
+    // FIXED: Safely allocate buffers
+    size_t name_len = strlen(name);
+    if(name_len > MAX_SHADER_NAME_LEN - 64) {
+        printf("LTWShdrWp: Fragment output name too long: %zu\n", name_len);
+        return;
+    }
+    
+    char* src_string = (char*)malloc(MAX_SHADER_NAME_LEN);
+    char* dst_string = (char*)malloc(MAX_SHADER_NAME_LEN);
+    
+    if(!src_string || !dst_string) {
+        printf("LTWShdrWp: Failed to allocate buffers in insert_fragout_pos\n");
+        free(src_string);
+        free(dst_string);
+        return;
+    }
+    
+    snprintf(src_string, MAX_SHADER_NAME_LEN, "/* LTW INSERT LOCATION %s LTW */", name);
+    snprintf(dst_string, MAX_SHADER_NAME_LEN, "layout(location = %u) ", pos);
+    
     gl4es_inplace_replace_simple(source, size, src_string, dst_string);
+    
+    free(src_string);
+    free(dst_string);
 }
 
 void glLinkProgram(GLuint program) {
@@ -105,6 +133,10 @@ void glLinkProgram(GLuint program) {
     }
     int nsrc_size = (int)(strlen(shader->source) + 1);
     char* new_source = malloc(nsrc_size);
+    if(!new_source) {
+        printf("LTWShdrWp: failed to allocate new_source\n");
+        goto fallthrough;
+    }
     memcpy(new_source, shader->source, nsrc_size);
     bool changesMade = false;
     for(GLuint i = 0; i < MAX_DRAWBUFFERS; i++) {
@@ -184,9 +216,16 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar *const*string, co
 #define SRC_LEN(x) length != NULL ? length[x] : strlen(string[x])
     for(GLsizei i = 0; i < count; i++) target_length += SRC_LEN(i);
     GLchar* target_string = malloc((target_length + 1) * sizeof(GLchar));
+    if(!target_string) {
+        printf("LTWShdrWp: failed to allocate target_string\n");
+        es3_functions.glShaderSource(shader, count, string, length);
+        return;
+    }
     size_t offset = 0;
     for(GLsizei i = 0; i < count; i++) {
-        memcpy(&target_string[offset], string[i], SRC_LEN(i));
+        size_t len = SRC_LEN(i);
+        memcpy(&target_string[offset], string[i], len);
+        offset += len;
     }
     target_string[target_length] = 0;
 
