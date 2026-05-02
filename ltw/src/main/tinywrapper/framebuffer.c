@@ -6,7 +6,9 @@
 
 #include "proc.h"
 #include "egl.h"
+#include "env.h"
 #include <string.h>
+#include <stdlib.h>
 
 // FIXED: Debug flag for framebuffer operations
 static bool framebuffer_debug = false;
@@ -155,7 +157,7 @@ void glClearBufferfv( 	GLenum buffer,
 void glDrawBuffers(GLsizei n, const GLenum* buffers) {
     if(!current_context || !buffers) return;
     
-    // FIXED: Validate buffer count
+    // FIXED: Validate buffer count and use dynamic allocation
     if(n < 0 || n > MAX_DRAWBUFFERS) {
         printf("LTW FB ERROR: glDrawBuffers called with invalid count: %d\n", n);
         return;
@@ -177,7 +179,13 @@ void glDrawBuffers(GLsizei n, const GLenum* buffers) {
     framebuffer->nbuffers = n;
     memcpy(framebuffer->virt_drawbuffers, buffers, n * sizeof(GLenum));
     
-    GLenum phys_drawbuffers[n];
+    // FIXED: Use malloc instead of VLA to prevent stack overflow
+    GLenum* phys_drawbuffers = (GLenum*)malloc(n * sizeof(GLenum));
+    if(!phys_drawbuffers) {
+        printf("LTW FB ERROR: Failed to allocate phys_drawbuffers\n");
+        return;
+    }
+    
     for(GLsizei i = 0; i < n; i++) {
         GLenum buffer = buffers[i];
         rebind_framebuffer(GL_DRAW_FRAMEBUFFER, framebuffer, buffer);
@@ -185,6 +193,7 @@ void glDrawBuffers(GLsizei n, const GLenum* buffers) {
         else phys_drawbuffers[i] = GL_NONE;
     }
     es3_functions.glDrawBuffers(n, phys_drawbuffers);
+    free(phys_drawbuffers);
 }
 
 void glDrawBuffer(GLenum buffer) {
@@ -434,7 +443,7 @@ void glBindFramebuffer(GLenum target, GLuint framebuffer) {
 }
 
 // FIXED: Initialize debug flag from environment
-__attribute((constructor)) void init_framebuffer_debug() {
+__attribute__((constructor)) void init_framebuffer_debug() {
     framebuffer_debug = env_istrue("LTW_DEBUG_FRAMEBUFFER");
     if(framebuffer_debug) {
         printf("LTW: Framebuffer debug logging enabled\n");
