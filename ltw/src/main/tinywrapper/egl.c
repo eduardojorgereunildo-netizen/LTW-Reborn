@@ -8,6 +8,7 @@
 #include "string_utils.h"
 #include "env.h"
 #include <string.h>
+#include <stdlib.h>
 
 thread_local context_t *current_context;
 unordered_map* context_map;
@@ -75,31 +76,83 @@ static void free_context(context_t* tw_context) {
 
 void init_extra_extensions(context_t* context, int* length) {
     const char* es_extensions = (const char*)es3_functions.glGetString(GL_EXTENSIONS);
+    if(!es_extensions) {
+        es_extensions = "";
+    }
     *length = (int)strlen(es_extensions);
     context->extensions_string = malloc(*length + 1);
+    if(!context->extensions_string) {
+        printf("LTW: Failed to allocate extensions_string\n");
+        *length = 0;
+        return;
+    }
     memcpy(context->extensions_string, es_extensions, *length+1);
 }
 
+// FIXED: Mali-safe extension adding with proper memory management
 void add_extra_extension(context_t* context, int* length, const char* extension)  {
+    if(!context || !extension || !length) return;
+    
     size_t extension_len = strlen(extension);
-
-    char str_append_extension[extension_len + 2];
+    
+    // FIXED: Limit extension name length for Mali compatibility
+    if(extension_len > 256) {
+        printf("LTW: Extension name too long for Mali: %zu (skipping %s)\n", extension_len, extension);
+        return;
+    }
+    
+    // FIXED: Allocate instead of VLA to prevent stack overflow
+    char* str_append_extension = (char*)malloc(extension_len + 2);
+    if(!str_append_extension) {
+        printf("LTW: Failed to allocate memory for extension append\n");
+        return;
+    }
+    
     memcpy(str_append_extension, extension, extension_len);
     str_append_extension[extension_len] = ' ';
     str_append_extension[extension_len + 1] = 0;
+    
+    char* old_extensions = context->extensions_string;
     context->extensions_string = gl4es_append(context->extensions_string, length, str_append_extension);
+    
+    if(!context->extensions_string) {
+        printf("LTW: Failed to append extension string\n");
+        context->extensions_string = old_extensions;
+        free(str_append_extension);
+        return;
+    }
 
     int extension_idx = context->nextras++;
-    context->extra_extensions_array = realloc(context->extra_extensions_array, sizeof(char*)*context->nextras);
-    char* extra_extension = malloc(extension_len + 1);
-    strncpy(extra_extension, extension, extension_len + 1);
+    char** new_array = (char**)realloc(context->extra_extensions_array, sizeof(char*)*context->nextras);
+    if(!new_array) {
+        printf("LTW: Failed to reallocate extensions array\n");
+        context->nextras--;
+        free(str_append_extension);
+        return;
+    }
+    context->extra_extensions_array = new_array;
+    
+    char* extra_extension = (char*)malloc(extension_len + 1);
+    if(!extra_extension) {
+        printf("LTW: Failed to allocate extra_extension\n");
+        context->nextras--;
+        free(str_append_extension);
+        return;
+    }
+    
+    memcpy(extra_extension, extension, extension_len + 1);
     context->extra_extensions_array[extension_idx] = extra_extension;
+    
+    free(str_append_extension);
 }
 
 void fin_extra_extensions(context_t* context, int length) {
+    if(!context || !context->extensions_string) return;
+    if(length < 2) return;
+    
     if(context->extensions_string[length-2] != ' ') return;
     char* orig_string = context->extensions_string;
-    context->extensions_string = realloc(context->extensions_string, length - 1);
+    context->extensions_string = (char*)realloc(context->extensions_string, length - 1);
     if(context->extensions_string == NULL) {
         free(orig_string);
         return;
@@ -108,6 +161,7 @@ void fin_extra_extensions(context_t* context, int length) {
 }
 
 void build_extension_string(context_t* context) {
+    if(!context) return;
     int length;
     init_extra_extensions(context, &length);
     if(context->buffer_storage) {
@@ -132,6 +186,11 @@ void build_extension_string(context_t* context) {
 static void find_esversion(context_t* context) {
     const char* version = (const char*) es3_functions.glGetString(GL_VERSION);
     const char* shader_version = (const char*) es3_functions.glGetString(GL_SHADING_LANGUAGE_VERSION);
+
+    if(!version || !shader_version) {
+        printf("LTW: Failed to get GL version strings\n");
+        goto fail;
+    }
 
     int esmajor = 0, esminor = 0, shadermajor = 3, shaderminor = 0;
     sscanf(version, " OpenGL ES %i.%i", &esmajor, &esminor);
@@ -161,48 +220,51 @@ static void find_esversion(context_t* context) {
     }
 
     const char* extensions = (const char*) es3_functions.glGetString(GL_EXTENSIONS);
-    if(strstr(extensions, "GL_EXT_buffer_storage")) context->buffer_storage = true;
-    if(strstr(extensions, "GL_EXT_texture_buffer")) context->buffer_texture_ext = true;
-    if(strstr(extensions, "GL_EXT_multi_draw_indirect")) context->multidraw_indirect = true;
+    if(extensions) {
+        if(strstr(extensions, "GL_EXT_buffer_storage")) context->buffer_storage = true;
+        if(strstr(extensions, "GL_EXT_texture_buffer")) context->buffer_texture_ext = true;
+        if(strstr(extensions, "GL_EXT_multi_draw_indirect")) context->multidraw_indirect = true;
 
-    // EXT_disjoint_timer_query provides accurate int64 timer queries
-    // on Core Profile it's ARB_timer_query instead
-    // This enables real time queries via mentioned extension, otherwise faked ones are used (see query.c)
-    if(strstr(extensions, "GL_EXT_disjoint_timer_query") || env_istrue_d("LTW_ENABLE_TIMER_QUERY", false)) context->timer_query = true;
+        // EXT_disjoint_timer_query provides accurate int64 timer queries
+        // on Core Profile it's ARB_timer_query instead
+        // This enables real time queries via mentioned extension, otherwise faked ones are used (see query.c)
+        if(strstr(extensions, "GL_EXT_disjoint_timer_query") || env_istrue_d("LTW_ENABLE_TIMER_QUERY", false)) context->timer_query = true;
 
-    bool basevertex_oes = strstr(extensions, "GL_OES_draw_elements_base_vertex");
-    bool basevertex_ext = strstr(extensions, "GL_EXT_draw_elements_base_vertex");
-    if(context->es32) {
-        context->drawelementsbasevertex = es3_functions.glDrawElementsBaseVertex;
-    }
-    else if(basevertex_oes) context->drawelementsbasevertex = es3_functions.glDrawElementsBaseVertexOES;
-    else if(basevertex_ext) context->drawelementsbasevertex = es3_functions.glDrawElementsBaseVertexEXT;
-    else context->drawelementsbasevertex = NULL;
+        bool basevertex_oes = strstr(extensions, "GL_OES_draw_elements_base_vertex") != NULL;
+        bool basevertex_ext = strstr(extensions, "GL_EXT_draw_elements_base_vertex") != NULL;
+        if(context->es32) {
+            context->drawelementsbasevertex = es3_functions.glDrawElementsBaseVertex;
+        }
+        else if(basevertex_oes) context->drawelementsbasevertex = es3_functions.glDrawElementsBaseVertexOES;
+        else if(basevertex_ext) context->drawelementsbasevertex = es3_functions.glDrawElementsBaseVertexEXT;
+        else context->drawelementsbasevertex = NULL;
 
-    bool drawbuffersi_oes = strstr(extensions, "GL_OES_draw_buffers_indexed");
-    bool drawbuffersi_ext = strstr(extensions, "GL_EXT_draw_buffers_indexed");
-    blending_functions_t* blend = &context->blending;
-    blend->available = true;
+        bool drawbuffersi_oes = strstr(extensions, "GL_OES_draw_buffers_indexed") != NULL;
+        bool drawbuffersi_ext = strstr(extensions, "GL_EXT_draw_buffers_indexed") != NULL;
+        blending_functions_t* blend = &context->blending;
+        blend->available = true;
 #define SET_FUNC(type) \
-    blend->blendequationi = es3_functions.glBlendEquationi ## type; \
-    blend->blendequationseparatei = es3_functions.glBlendEquationSeparatei ## type; \
-    blend->blendfunci = es3_functions.glBlendFunci ## type; \
-    blend->blendfuncseparatei = es3_functions.glBlendFuncSeparatei ## type; \
-    blend->colormaski = es3_functions.glColorMaski ## type; \
+        blend->blendequationi = es3_functions.glBlendEquationi ## type; \
+        blend->blendequationseparatei = es3_functions.glBlendEquationSeparatei ## type; \
+        blend->blendfunci = es3_functions.glBlendFunci ## type; \
+        blend->blendfuncseparatei = es3_functions.glBlendFuncSeparatei ## type; \
+        blend->colormaski = es3_functions.glColorMaski ## type; \
 
-    if(context->es32){
-        SET_FUNC()
-    }
-    else if(drawbuffersi_oes){
-        SET_FUNC(OES)
-    }
-    else if(drawbuffersi_ext){
-        SET_FUNC(EXT)
-    }
-    else {
-        blend->available = false;
-    }
+        if(context->es32){
+            SET_FUNC()
+        }
+        else if(drawbuffersi_oes){
+            SET_FUNC(OES)
+        }
+        else if(drawbuffersi_ext){
+            SET_FUNC(EXT)
+        }
+        else {
+            blend->available = false;
+        }
 #undef SET_FUNC
+    }
+    
     build_extension_string(context);
 
     return;
@@ -243,8 +305,10 @@ EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config, EGLContext share_c
 EGLBoolean eglDestroyContext (EGLDisplay dpy, EGLContext ctx) {
     if(!host_eglDestroyContext(dpy, ctx)) return EGL_FALSE;
     context_t* old_ctx = unordered_map_remove(context_map, ctx);
-    free_context(old_ctx);
-    free(old_ctx);
+    if(old_ctx) {
+        free_context(old_ctx);
+        free(old_ctx);
+    }
     return EGL_TRUE;
 }
 
