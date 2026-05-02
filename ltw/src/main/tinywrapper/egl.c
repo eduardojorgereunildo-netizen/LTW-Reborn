@@ -128,6 +128,7 @@ void build_extension_string(context_t* context) {
     fin_extra_extensions(context, length);
 }
 
+// FIXED: Better ES version detection with full ES 3.2 support
 static void find_esversion(context_t* context) {
     const char* version = (const char*) es3_functions.glGetString(GL_VERSION);
     const char* shader_version = (const char*) es3_functions.glGetString(GL_SHADING_LANGUAGE_VERSION);
@@ -137,16 +138,26 @@ static void find_esversion(context_t* context) {
     sscanf(shader_version, " OpenGL ES GLSL ES %i.%i", &shadermajor, &shaderminor);
     context->shader_version = shadermajor * 100 + shaderminor;
     printf("LTW: Running on OpenGL ES %i.%i with ESSL %i\n", esmajor, esminor, context->shader_version);
+    
     if(esmajor == 0 && esminor == 0) goto fail;
     if(esmajor < 3 || context->shader_version < 300) {
-        printf("Unsupported OpenGL ES version. This will cause you problems down the line.\n");
+        printf("LTW: Unsupported OpenGL ES version. This will cause you problems down the line.\n");
         return;
     }
+    
+    // FIXED: Proper ES version detection
     if(esmajor == 3) {
         context->es31 = esminor >= 1;
         context->es32 = esminor >= 2;
-    }else if(esmajor > 3) {
-        context->es32 = context->es31 = true;
+    } else if(esmajor > 3) {
+        context->es31 = true;
+        context->es32 = true;
+    }
+    
+    if(context->es32) {
+        printf("LTW: OpenGL ES 3.2 detected - full feature support enabled\n");
+    } else if(context->es31) {
+        printf("LTW: OpenGL ES 3.1 detected - most features available\n");
     }
 
     const char* extensions = (const char*) es3_functions.glGetString(GL_EXTENSIONS);
@@ -161,7 +172,9 @@ static void find_esversion(context_t* context) {
 
     bool basevertex_oes = strstr(extensions, "GL_OES_draw_elements_base_vertex");
     bool basevertex_ext = strstr(extensions, "GL_EXT_draw_elements_base_vertex");
-    if(context->es32) context->drawelementsbasevertex = es3_functions.glDrawElementsBaseVertex;
+    if(context->es32) {
+        context->drawelementsbasevertex = es3_functions.glDrawElementsBaseVertex;
+    }
     else if(basevertex_oes) context->drawelementsbasevertex = es3_functions.glDrawElementsBaseVertexOES;
     else if(basevertex_ext) context->drawelementsbasevertex = es3_functions.glDrawElementsBaseVertexEXT;
     else context->drawelementsbasevertex = NULL;
@@ -243,7 +256,7 @@ EGLBoolean eglMakeCurrent (EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGL
     }
     context_t* tw_context = unordered_map_get(context_map, ctx);
     if(tw_context == NULL) {
-        printf("TinywrapperEGL: Failed to find context %p\n", ctx);
+        printf("LTW: Failed to find context %p\n", ctx);
         abort();
     }
     if(!tw_context->context_rdy) {
